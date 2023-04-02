@@ -78,8 +78,9 @@ public class LsmKVStore implements KVStore{
                     restoreFromWal(new RandomAccessFile(file, RW_MODE));
                 }
             }
+            // 这里
         } catch (Throwable t) {
-            LOGGER.error("初始化异常~", t);
+            LoggerUtil.error((org.slf4j.Logger) LOGGER,t, "init error~");
             throw new RuntimeException(t);
         }
     }
@@ -121,7 +122,7 @@ public class LsmKVStore implements KVStore{
                 dumpToL0SsTable();
             }
         } catch (Throwable t) {
-            LOGGER.error("command set error~", t);
+            LoggerUtil.error((org.slf4j.Logger) LOGGER, t, "command set error~");
             throw new RuntimeException(t);
         } finally {
             indexLock.writeLock().unlock();
@@ -151,7 +152,7 @@ public class LsmKVStore implements KVStore{
             walFile = new File(dataDir + WAL);
             wal = new RandomAccessFile(walFile, RW_MODE);
         } catch (Throwable t) {
-            LOGGER.error("switch index error~", t);
+            LoggerUtil.error((org.slf4j.Logger) LOGGER, t, "switch index error~");
             throw new RuntimeException(t);
         } finally {
             indexLock.writeLock().unlock();
@@ -161,9 +162,9 @@ public class LsmKVStore implements KVStore{
     private void dumpToL0SsTable() {
         try {
             Long fileNumber = nextFileNumber.getAndIncrement();
-            SsTable
+            // 这里
         } catch (Throwable t) {
-            LOGGER.error("dump to l0 ssTable error~", t);
+            LoggerUtil.error((org.slf4j.Logger) LOGGER,t, "dump to l0 ssTable error~");
             throw new RuntimeException(t);
         }
     }

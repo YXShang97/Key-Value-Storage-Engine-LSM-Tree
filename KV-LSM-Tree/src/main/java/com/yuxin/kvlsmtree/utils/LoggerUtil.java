@@ -1,6 +1,7 @@
 package com.yuxin.kvlsmtree.utils;
 
-import com.sun.org.slf4j.internal.Logger;
+import org.slf4j.Logger;
+
 public class LoggerUtil {
 
     public static void debug(Logger logger, String format, Object... arguments) {
@@ -10,7 +11,7 @@ public class LoggerUtil {
     }
 
     public static void info(Logger logger, String format, Object... arguments) {
-        if (logger.isInfoEnable()) {
+        if (logger.isInfoEnabled()) {
             logger.info(format, arguments);
         }
     }
