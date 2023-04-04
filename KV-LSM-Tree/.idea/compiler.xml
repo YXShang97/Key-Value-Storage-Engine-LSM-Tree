@@ -9,8 +9,11 @@
         <sourceOutputDir name="target/generated-sources/annotations" />
         <sourceTestOutputDir name="target/generated-test-sources/test-annotations" />
         <outputRelativeToContentRoot value="true" />
-        <module name="KV-LSM-Tree" />
+        <module name="kvstore" />
       </profile>
     </annotationProcessing>
+    <bytecodeTargetLevel>
+      <module name="KV-LSM-Tree" target="1.7" />
+    </bytecodeTargetLevel>
   </component>
 </project>
