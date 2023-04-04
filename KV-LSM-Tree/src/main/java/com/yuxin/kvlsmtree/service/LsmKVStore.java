@@ -1,8 +1,10 @@
 package com.yuxin.kvlsmtree.service;
 
 import com.alibaba.fastjson.JSONObject;
+import com.yuxin.kvlsmtree.constants.KVConstants;
 import com.yuxin.kvlsmtree.model.command.Command;
 import com.yuxin.kvlsmtree.model.command.SetCommand;
+import com.yuxin.kvlsmtree.model.sstable.SsTable;
 import com.yuxin.kvlsmtree.utils.ConvertUtil;
 import com.yuxin.kvlsmtree.utils.LoggerUtil;
 import lombok.Getter;
@@ -11,6 +13,8 @@ import javax.smartcardio.CommandAPDU;
 import java.io.File;
 import java.io.IOException;
 import java.io.RandomAccessFile;
+import java.util.List;
+import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
 import java.util.concurrent.ConcurrentSkipListMap;
@@ -68,15 +72,30 @@ public class LsmKVStore implements KVStore{
             this.wal = new RandomAccessFile(walFile, RW_MODE);
             this.compactioner = new Compactioner();
 
+            // if directory is empty, need to load ssTable
             if (files == null || files.length == 0) {
                 return;
             }
 
+            // load data from ssTable and wal
             for (File file : files) {
                 String fileName = file.getName();
-                if (file.isFile() && fileName.equals(WAL_TMP)) {
+                // restore data from wal
+                if (file.isFile() && fileName.equals(WAL_TMP)) {  // recover data from walTmp
                     restoreFromWal(new RandomAccessFile(file, RW_MODE));
+                } else if (file.isFile() && fileName.equals(WAL)) {
+                    walFile = file;
+                    wal = new RandomAccessFile(walFile, RW_MODE);
+                    restoreFromWal(wal);
                 }
+                // load data from ssTable
+                if (file.isFile() && fileName.endsWith(KVConstants.FILE_SUFFIX_SSTABLE)) {
+                    SsTable ssTable = SsTable.createFromFile(file.getAbsolutePath(), true);
+                    Integer level = ssTable.getLevel();
+
+                    // 这里
+                }
+
             }
             // 这里
         } catch (Throwable t) {
@@ -91,15 +110,15 @@ public class LsmKVStore implements KVStore{
             long start = 0;
             wal.seek(start);
             while (start < len) {
-                int valueLen = wal.readInt();
-                byte[] commandBytes = new byte[valueLen];
+                int commandLen = wal.readInt();
+                byte[] commandBytes = new byte[commandLen];
                 wal.read(commandBytes);
                 JSONObject commandJson = JSONObject.parseObject(new String(commandBytes));
                 Command command = ConvertUtil.jsonToCommand(commandJson);
                 if (command == null) {
                     memTable.put(command.getKey(), command);
                 }
-                start += valueLen + 4;
+                start += commandLen + 4;
             }
             wal.seek(wal.length());
         } catch (Throwable t) {
