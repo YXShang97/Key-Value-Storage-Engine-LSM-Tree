@@ -2,6 +2,9 @@ package com.yuxin.kvlsmtree.model.sstable;
 
 import com.alibaba.fastjson.JSONObject;
 import com.alibaba.fastjson.TypeReference;
+import com.google.common.base.Charsets;
+import com.google.common.hash.BloomFilter;
+import com.google.common.hash.Funnels;
 import com.sun.org.slf4j.internal.Logger;
 import com.sun.org.slf4j.internal.LoggerFactory;
 import com.yuxin.kvlsmtree.model.Position;
@@ -13,6 +16,7 @@ import com.yuxin.kvlsmtree.utils.ConvertUtil;
 import com.yuxin.kvlsmtree.utils.FileUtil;
 import com.yuxin.kvlsmtree.utils.LoggerUtil;
 import lombok.Data;
+import org.apache.commons.lang3.SerializationUtils;
 import org.xerial.snappy.Snappy;
 
 import java.io.Closeable;
@@ -40,6 +44,10 @@ public class SsTable implements Closeable {
 
     private boolean enablePartDataCompress;
 
+    // 布隆
+    // filter block (Bloom filter for data block)
+    private BloomFilter<CharSequence> dataBlockBF = BloomFilter.create(Funnels.stringFunnel(Charsets.UTF_8),
+            1000000);
     private SsTable(String filePath, boolean enablePartDataCompress) {
         this.filePath = filePath;
         this.enablePartDataCompress = enablePartDataCompress;
@@ -83,6 +91,13 @@ public class SsTable implements Closeable {
 
     public Command query(String key) {
         try {
+            // 布隆
+            boolean existBF = this.dataBlockBF.mightContain(key);
+            LoggerUtil.debug((org.slf4j.Logger) LOGGER, "[SsTable] [restoreFromFile] [bloom filter query result]: {}", existBF);
+            if (!existBF) {
+                return null;
+            }
+
             LinkedList<Position> sparseKeyPositionList = new LinkedList<>();
 
             // find the key range including target key in sparseIndex
@@ -117,6 +132,14 @@ public class SsTable implements Closeable {
         try {
             TableMetaInfo tableMetaInfo = TableMetaInfo.readFromFile(tableFile);
             LoggerUtil.debug((org.slf4j.Logger) LOGGER, "[SsTable][restoreFromFile][tableMetaInfo]: {}", tableMetaInfo);
+
+            // 布隆
+            // 读取filter block
+            byte[] dataBlockBFBytes = new byte[(int) tableMetaInfo.getFilterBlockLen()];
+            tableFile.seek(tableMetaInfo.getFilterBlockStart());
+            tableFile.read(dataBlockBFBytes);
+            dataBlockBF = SerializationUtils.deserialize(dataBlockBFBytes);
+
             byte[] indexBytes = new byte[(int) tableMetaInfo.getIndexLen()];
             tableFile.seek(tableMetaInfo.getIndexStart());
             tableFile.read(indexBytes);
@@ -134,6 +157,7 @@ public class SsTable implements Closeable {
 
     private void initFromIndex(ConcurrentSkipListMap<String, Command> index) {
         try {
+            // write to data block
             JSONObject partData = new JSONObject(true);
             tableMetaInfo.setDataStart(tableFile.getFilePointer());
             for (Command command : index.values()) {
@@ -150,6 +174,9 @@ public class SsTable implements Closeable {
                 if (partData.size() >= tableMetaInfo.getPartSize()) {
                     writeDataPart(partData);
                 }
+
+                // 布隆
+                dataBlockBF.put(command.getKey());
             }
 
             if (partData.size() > 0) {
@@ -157,6 +184,12 @@ public class SsTable implements Closeable {
             }
             long dataPartLen = tableFile.getFilePointer() - tableMetaInfo.getDataStart();
             tableMetaInfo.setDataLen(dataPartLen);
+
+            // 布隆
+            // write to filter block
+            byte[] dataBlockBFBytes = SerializationUtils.serialize(dataBlockBF);
+            tableMetaInfo.setFilterBlockStart(tableFile.getFilePointer());
+            tableFile.write(dataBlockBFBytes);
 
             byte[] indexBytes = JSONObject.toJSONString(sparseIndex).getBytes(StandardCharsets.UTF_8);
             tableMetaInfo.setIndexStart(tableFile.getFilePointer());

@@ -17,6 +17,9 @@ public class TableMetaInfo {
 
     private long dataLen;
 
+    private long filterBlockStart;
+    private long filterBlockLen;
+
     private long indexStart;
 
     private long indexLen;
@@ -39,6 +42,8 @@ public class TableMetaInfo {
             file.writeLong(dataLen);
             file.writeLong(indexStart);
             file.writeLong(indexLen);
+            file.writeLong(filterBlockStart);
+            file.writeLong(filterBlockLen);
             file.writeLong(version);
         } catch (Throwable t) {
             throw new RuntimeException(t);

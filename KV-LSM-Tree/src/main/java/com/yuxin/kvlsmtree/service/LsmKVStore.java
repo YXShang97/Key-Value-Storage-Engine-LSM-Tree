@@ -1,6 +1,7 @@
 package com.yuxin.kvlsmtree.service;
 
 import com.alibaba.fastjson.JSONObject;
+import com.yuxin.kvlsmtree.compaction.Compactioner;
 import com.yuxin.kvlsmtree.constants.KVConstants;
 import com.yuxin.kvlsmtree.model.command.Command;
 import com.yuxin.kvlsmtree.model.command.RmCommand;
