@@ -1,8 +1,10 @@
 package com.yuxin.kvlsmtree.service;
 
 import com.alibaba.fastjson.JSONObject;
+import com.yuxin.kvlsmtree.compaction.Compactioner;
 import com.yuxin.kvlsmtree.constants.KVConstants;
 import com.yuxin.kvlsmtree.model.command.Command;
+import com.yuxin.kvlsmtree.model.command.RmCommand;
 import com.yuxin.kvlsmtree.model.command.SetCommand;
 import com.yuxin.kvlsmtree.model.sstable.SsTable;
 import com.yuxin.kvlsmtree.utils.ConvertUtil;
@@ -97,7 +99,8 @@ public class LsmKVStore implements KVStore{
                 }
 
             }
-            // 这里
+
+            LoggerUtil.info((org.slf4j.Logger) LOGGER, "LsmKvStore started,levelMetaInfos=" + levelMetaInfos.toString());
         } catch (Throwable t) {
             LoggerUtil.error((org.slf4j.Logger) LOGGER,t, "init error~");
             throw new RuntimeException(t);
@@ -148,16 +151,16 @@ public class LsmKVStore implements KVStore{
         }
     }
 
+    // switch memTable to immutableMemTable and reset memTable
     private void switchIndex() {
         try {
             indexLock.writeLock().lock();
-            if (immutableMemTable != null) {
-                return;
-            }
+            // switch memTable to immutableMemTable
             immutableMemTable = memTable;
             memTable = new ConcurrentSkipListMap<>();
             wal.close();
 
+            // switch wal to walTmp
             File walTmp = new File(dataDir + WAL_TMP);
             if (walTmp.exists()) {
                 if (!walTmp.delete()) {
@@ -168,6 +171,7 @@ public class LsmKVStore implements KVStore{
                 throw new RuntimeException("rename wal error~");
             }
 
+            // reset wal
             walFile = new File(dataDir + WAL);
             wal = new RandomAccessFile(walFile, RW_MODE);
         } catch (Throwable t) {
@@ -190,21 +194,165 @@ public class LsmKVStore implements KVStore{
 
     @Override
     public String get(String key) {
+        LoggerUtil.info((org.slf4j.Logger) LOGGER, "[get]key: {}" + key);
+        try {
+            indexLock.readLock().lock();
+            // find from memTable
+            Command command = memTable.get(key);
+            // find from immutableMemTable
+            if (command == null && immutableMemTable != null) {
+                command = immutableMemTable.get(key);
+            }
+            if (command == null) {
+                // find from ssTable (from the latest to the oldest)
+                command = findFromSsTable(key);
+            }
+
+            if (command instanceof SetCommand) {
+                return ((SetCommand) command).getValue();
+            }
+            if (command instanceof RmCommand) {
+                return null;
+            }
+            return null;
+        } catch (Throwable t) {
+            throw new RuntimeException(t);
+        } finally {
+            indexLock.readLock().unlock();
+        }
+    }
+
+
+    private Command findFromSsTable(String key) {
+        Command l0Result = findFromL0SsTable(key);
+        // find from l0 ssTable
+        if (l0Result != null) {
+            return l0Result;
+        }
+
+        // find from ssTable on other level
+        for (int level = 1; level < KVConstants.SSTABLE_MAX_LEVEL; level++) {
+            Command otherLevelResult = findFromOtherLevelSsTable(key, level);
+            if (otherLevelResult != null) {
+                return otherLevelResult;
+            }
+        }
+
+        return null;
+    }
+
+    private Command findFromL0SsTable(String key) {
+        List<SsTable> l0SsTables = levelMetaInfos.get(0);
+        if (l0SsTables == null || l0SsTables.isEmpty()) {
+            return null;
+        }
+
+        // sort by fileNumber desc
+        l0SsTables.sort((o1, o2) -> {
+            if (o1.getFileNumber() < o2.getFileNumber()) {
+                return 1;
+            } else if (o1.getFileNumber() > o2.getFileNumber()) {
+                return -1;
+            } else {
+                return 0;
+            }
+        });
+
+        // if multiple command with the same key, return the latest one
+        for (SsTable ssTable : l0SsTables) {
+            Command command = ssTable.query(key);
+            if (command != null) {
+                return command;
+            }
+        }
+
+        return null;
+    }
+
+    private Command findFromOtherLevelSsTable(String key, Integer level) {
+        List<SsTable> ssTables = levelMetaInfos.get(level);
+        if (ssTables == null || ssTables.isEmpty()) {
+            return null;
+        }
+
+        // sort by smallestKey asc
+        ssTables.sort((o1, o2) -> {
+            if (o1.getTableMetaInfo().getSmallestKey().compareTo(o2.getTableMetaInfo().getSmallestKey()) < 0) {
+                return -1;
+            } else if (o1.getTableMetaInfo().getSmallestKey().compareTo(o2.getTableMetaInfo().getSmallestKey()) > 0) {
+                return 1;
+            } else {
+                return 0;
+            }
+        });
+
+        // binary search
+        Command command = binarySearchSsTable(key, ssTables);
+        if (command != null) {
+            return command;
+        }
+
+        return null;
+    }
+
+    private Command binarySearchSsTable(String key, List<SsTable> ssTables) {
+        if (ssTables == null || ssTables.isEmpty()) {
+           return null;
+        }
+
+        int left = 0, right = ssTables.size() - 1;
+        while (left <= right) {
+            int mid = left + (right - left) / 2;
+            SsTable midSsTable = ssTables.get(mid);
+            if (key.compareTo(midSsTable.getTableMetaInfo().getSmallestKey()) >= 0
+                    && key.compareTo(midSsTable.getTableMetaInfo().getLargestKey()) <= 0) {
+                return midSsTable.query(key);
+            } else if (key.compareTo(midSsTable.getTableMetaInfo().getSmallestKey()) < 0) {
+                right = mid - 1;
+            } else {
+                left = mid + 1;
+            }
+        }
+
         return null;
     }
 
     @Override
     public void rm(String key) {
-
+        try {
+            indexLock.writeLock().lock();
+            RmCommand rmCommand = new RmCommand(key);
+            byte[] commandBytes = JSONObject.toJSONBytes(rmCommand);
+            wal.write(commandBytes.length);
+            wal.write(commandBytes);
+            memTable.put(key, rmCommand);
+            if (memTable.size() > storeThreshold) {
+                switchIndex();
+                dumpToL0SsTable();
+            }
+        } catch (Throwable t) {
+            throw new RuntimeException(t);
+        } finally {
+            indexLock.writeLock().unlock();
+        }
     }
 
     @Override
     public void printfStats() {
-
+        LoggerUtil.debug((org.slf4j.Logger) LOGGER, "printfStats,levelMetaInfos=" + this.getLevelMetaInfos());
     }
 
     @Override
     public void close() throws IOException {
-
+        wal.close();
+        for (List<SsTable> ssTableList : levelMetaInfos.values()) {
+            ssTableList.forEach(ssTable -> {
+                try {
+                    ssTable.close();
+                } catch (IOException e) {
+                    e.printStackTrace();
+                }
+            });
+        }
     }
 }
